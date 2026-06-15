@@ -1,0 +1,2 @@
+mailru-im-bot
+python-dotenv
