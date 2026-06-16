@@ -212,6 +212,11 @@ class Defaults:
     DAYS_AHEAD_FOR_SYNC: Final[int] = 30
     DAYS_BACK_FOR_SYNC: Final[int] = 7
     MAX_EVENTS_PER_REQUEST: Final[int] = 500
+
+    # Названия переменных окружения
+    ENV_GOOGLE_CALENDAR_ID = "GOOGLE_CALENDAR_ID"
+    ENV_DATABASE_URL = "DATABASE_URL"
+    ENV_BOT_TOKEN = "BOT_TOKEN"
     
     # Лимиты для отображения
     MAX_EVENTS_TO_SHOW: Final[int] = 50

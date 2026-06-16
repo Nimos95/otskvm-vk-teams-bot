@@ -1,13 +1,17 @@
-# run.py - точка входа (исправлено)
+# run.py
 
 import sys
 import os
 import asyncio
 import signal
+from dotenv import load_dotenv
+
+load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.core.database import Database
+from src.modules.calendar.handlers import get_event_loop
 
 
 def signal_handler(signum, frame):
@@ -19,15 +23,11 @@ def signal_handler(signum, frame):
 def init_db_sync():
     """Синхронная инициализация БД"""
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        loop = get_event_loop()
         loop.run_until_complete(Database.get_pool())
-        loop.close()
-        print("✅ База данных подключена")
         return True
     except Exception as e:
         print(f"⚠️ База данных НЕ подключена: {e}")
-        print("   Бот будет работать без сохранения данных")
         return False
 
 
@@ -37,20 +37,15 @@ def main():
     print("🚀 ЗАПУСК БОТА")
     print("=" * 60)
     
-    # Настройка обработчиков сигналов (для корректного завершения)
     try:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
     except:
         pass
     
-    # Инициализация БД
     db_ok = init_db_sync()
     
-    # Импортируем create_bot
     from src.bot import create_bot
-    
-    # Создаём бота с использованием SafeBot
     bot, module_manager = create_bot()
     
     print(f"✅ Бот успешно создан")
@@ -62,21 +57,16 @@ def main():
     print("=" * 60)
     
     try:
-        # Запускаем поллинг
         bot.start_polling()
-        # Используем наш безопасный idle
         bot.idle()
     except KeyboardInterrupt:
         print("\n👋 Бот остановлен пользователем")
     except Exception as e:
         print(f"❌ Ошибка при работе бота: {e}")
     finally:
-        # Закрываем соединение с БД
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            loop = get_event_loop()
             loop.run_until_complete(Database.close())
-            loop.close()
         except:
             pass
 

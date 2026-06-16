@@ -1,3 +1,15 @@
 mailru-im-bot
 python-dotenv
 asyncpg
+pytz
+python-dateutil
+
+# Google API (совместимый набор для Python 3.6)
+protobuf==3.19.6
+google-auth==1.35.0
+google-api-core==1.31.5
+google-auth-oauthlib==0.4.6
+google-auth-httplib2==0.0.4
+google-api-python-client==1.8.0
+httplib2==0.20.4
+pyparsing==2.4.7
