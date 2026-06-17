@@ -15,6 +15,8 @@ from dateutil import parser
 
 from src.core.database import Database
 
+from src.utils.auditory_normalizer import AuditoryNormalizer
+
 load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -102,23 +104,32 @@ class GoogleCalendarClient:
             return None
     
     def _extract_auditory_from_event(self, event: Dict) -> Optional[str]:
-        """Извлекает название аудитории из события."""
+        """
+        Извлекает название аудитории из события.
+        Ищет только в поле location (самое надёжное место).
+        """
         location = event.get("location", "")
         if location and location.strip():
             return location.strip()
         
-        description = event.get("description", "")
-        if description and description.strip():
-            return description.strip()
-        
         return None
     
     async def _find_auditory_id(self, raw_name: str, pool) -> Optional[int]:
-        """Пытается найти ID аудитории по названию."""
+        """
+        Находит ID аудитории по названию с использованием нормализации.
+        
+        Алгоритм:
+        1. Проверка на пустое название.
+        2. Прямой поиск в БД по названию (ILIKE).
+        3. Нормализация через AuditoryNormalizer.
+        4. Повторный поиск по нормализованному названию.
+        5. Логирование ненайденных аудиторий для пополнения словаря.
+        """
         name = (raw_name or "").strip()
         if not name:
             return None
         
+        # 1. Прямой поиск (оригинальное название)
         row = await pool.fetchrow(
             "SELECT id FROM auditories WHERE name ILIKE $1",
             f"%{name}%",
@@ -126,6 +137,21 @@ class GoogleCalendarClient:
         if row:
             return row["id"]
         
+        # 2. Нормализация названия
+        normalized = AuditoryNormalizer.normalize(name)
+        
+        # Если нормализация изменила название — пробуем найти снова
+        if normalized != name:
+            row = await pool.fetchrow(
+                "SELECT id FROM auditories WHERE name = $1",
+                normalized,
+            )
+            if row:
+                print(f"   🏫 Найдена аудитория по нормализованному названию: '{name}' -> '{normalized}' (ID: {row['id']})")
+                return row["id"]
+        
+        # 3. Если не найдено — логируем для пополнения словаря
+        print(f"   ⚠️ Аудитория не найдена: '{name}' (нормализовано: '{normalized}')")
         return None
     
     async def save_events_to_db(self, events: List[Dict[str, Any]]) -> int:

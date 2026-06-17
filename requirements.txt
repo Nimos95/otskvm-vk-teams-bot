@@ -3,6 +3,7 @@ python-dotenv
 asyncpg
 pytz
 python-dateutil
+cyrtranslit
 
 # Google API (совместимый набор для Python 3.6)
 protobuf==3.19.6
