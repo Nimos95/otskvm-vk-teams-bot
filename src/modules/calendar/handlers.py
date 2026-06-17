@@ -137,7 +137,7 @@ def tomorrow_handler(bot, event):
 
 
 def week_handler(bot, event):
-    """Команда /week — события на неделю с русскими названиями дней"""
+    """Команда /week — события на неделю с аудиториями"""
     try:
         tz = pytz.timezone(Defaults.TIMEZONE)
         now = datetime.now(tz)
@@ -157,17 +157,14 @@ def week_handler(bot, event):
             )
             return
         
+        # Группируем по дням
         days = {}
         for ev in events:
             start_time = ev['start_time']
             if start_time.tzinfo is None:
                 start_time = pytz.UTC.localize(start_time)
             start_local = start_time.astimezone(tz)
-            
-            day_en = start_local.strftime('%A')
-            day_ru = WEEKDAYS_RU.get(day_en, day_en)
-            day_key = f"{start_local.strftime('%d.%m')} ({day_ru})"
-            
+            day_key = start_local.strftime('%d.%m (%A)')
             if day_key not in days:
                 days[day_key] = []
             days[day_key].append(ev)
@@ -180,7 +177,19 @@ def week_handler(bot, event):
                 if start_time.tzinfo is None:
                     start_time = pytz.UTC.localize(start_time)
                 start_local = start_time.astimezone(tz)
-                lines.append(f"   {Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {ev['title']}")
+                
+                title = ev.get('title', 'Без названия')
+                line = f"   {Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {title}"
+                lines.append(line)
+                
+                # Добавляем аудиторию, если есть
+                auditory_name = ev.get('auditory_name')
+                if auditory_name:
+                    auditory_building = ev.get('auditory_building', '')
+                    if auditory_building:
+                        lines.append(f"      {Emoji.LOCATION} {auditory_name} ({auditory_building})")
+                    else:
+                        lines.append(f"      {Emoji.LOCATION} {auditory_name}")
             lines.append("")
         
         bot.send_text(
@@ -229,24 +238,33 @@ def sync_handler(bot, event):
 
 
 async def get_events_from_db(start_utc, end_utc):
-    """Получение событий из БД за период (в UTC)"""
+    """Получение событий из БД за период (в UTC) с информацией об аудиториях"""
     pool = await Database.get_pool()
     
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT google_event_id, title, description,
-                   start_time, end_time, organizer, status
-            FROM calendar_events
-            WHERE start_time >= $1 AND start_time < $2
-              AND status != 'cancelled'
-            ORDER BY start_time ASC
+            SELECT 
+                ce.google_event_id, 
+                ce.title, 
+                ce.description,
+                ce.start_time, 
+                ce.end_time, 
+                ce.organizer, 
+                ce.status,
+                a.name AS auditory_name,
+                a.building AS auditory_building
+            FROM calendar_events ce
+            LEFT JOIN auditories a ON ce.auditory_id = a.id
+            WHERE ce.start_time >= $1 AND ce.start_time < $2
+              AND ce.status != 'cancelled'
+            ORDER BY ce.start_time ASC
         """, start_utc, end_utc)
         
         return [dict(row) for row in rows]
 
 
 def format_events(events, period_name, tz):
-    """Форматирует события в читаемое сообщение (HTML)"""
+    """Форматирует события с информацией об аудиториях и зданиях"""
     if not events:
         return f"{Emoji.EMPTY} На {period_name} мероприятий нет."
     
@@ -255,13 +273,25 @@ def format_events(events, period_name, tz):
     for ev in events:
         title = ev.get('title', 'Без названия')
         
+        # Время
         start_time = ev['start_time']
         if start_time.tzinfo is None:
             start_time = pytz.UTC.localize(start_time)
         start_local = start_time.astimezone(tz)
         
+        # Строка с временем и названием события
         lines.append(f"{Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {title}")
-        lines.append("")
+        
+        # Строка с аудиторией (если есть)
+        auditory_name = ev.get('auditory_name')
+        if auditory_name:
+            auditory_building = ev.get('auditory_building', '')
+            if auditory_building:
+                lines.append(f"   {Emoji.LOCATION} {auditory_name} ({auditory_building})")
+            else:
+                lines.append(f"   {Emoji.LOCATION} {auditory_name}")
+        
+        lines.append("")  # Пустая строка между событиями
     
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"{Emoji.INFO} Итого: {len(events)} мероприятий")
