@@ -137,7 +137,7 @@ def tomorrow_handler(bot, event):
 
 
 def week_handler(bot, event):
-    """Команда /week — события на неделю с аудиториями"""
+    """Команда /week — события на неделю с русскими днями и аудиториями"""
     try:
         tz = pytz.timezone(Defaults.TIMEZONE)
         now = datetime.now(tz)
@@ -157,14 +157,19 @@ def week_handler(bot, event):
             )
             return
         
-        # Группируем по дням
+        # Группируем по дням с русскими названиями
         days = {}
         for ev in events:
             start_time = ev['start_time']
             if start_time.tzinfo is None:
                 start_time = pytz.UTC.localize(start_time)
             start_local = start_time.astimezone(tz)
-            day_key = start_local.strftime('%d.%m (%A)')
+            
+            # Русское название дня
+            day_en = start_local.strftime('%A')
+            day_ru = WEEKDAYS_RU.get(day_en, day_en)
+            day_key = f"{start_local.strftime('%d.%m')} ({day_ru})"
+            
             if day_key not in days:
                 days[day_key] = []
             days[day_key].append(ev)
@@ -182,7 +187,7 @@ def week_handler(bot, event):
                 line = f"   {Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {title}"
                 lines.append(line)
                 
-                # Добавляем аудиторию, если есть
+                # Аудитория
                 auditory_name = ev.get('auditory_name')
                 if auditory_name:
                     auditory_building = ev.get('auditory_building', '')
