@@ -1,6 +1,7 @@
 # src/modules/calendar/handlers.py
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 import pytz
 from src.core.google_client import GoogleCalendarClient
@@ -11,6 +12,9 @@ from .sync import sync_calendar
 # Глобальные переменные
 _calendar_client = None
 _loop = None
+
+# Словарь для хранения msgId активных сообщений календаря
+_active_messages = {}
 
 # Словарь для перевода дней недели на русский
 WEEKDAYS_RU = {
@@ -25,7 +29,6 @@ WEEKDAYS_RU = {
 
 
 def get_event_loop():
-    """Получение или создание event loop"""
     global _loop
     if _loop is None or _loop.is_closed():
         _loop = asyncio.new_event_loop()
@@ -34,7 +37,6 @@ def get_event_loop():
 
 
 def run_async(coro):
-    """Запускает асинхронную функцию в общем event loop"""
     loop = get_event_loop()
     if loop.is_running():
         future = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -44,8 +46,9 @@ def run_async(coro):
 
 
 def setup(bot, module_manager):
-    """Инициализация модуля календаря"""
     global _calendar_client
+    
+    print("📦 Модуль 'calendar' загружается...")
     
     try:
         _calendar_client = GoogleCalendarClient()
@@ -61,16 +64,107 @@ def setup(bot, module_manager):
     module_manager.register_command(Commands.WEEK, week_handler, 'calendar')
     module_manager.register_command(Commands.SYNC, sync_handler, 'calendar')
     
+    module_manager.register_callback('today', today_callback, 'calendar')
+    module_manager.register_callback('tomorrow', tomorrow_callback, 'calendar')
+    module_manager.register_callback('week', week_callback, 'calendar')
+    module_manager.register_callback('sync', sync_callback, 'calendar')  # <-- НОВОЕ
+    module_manager.register_callback('main_menu', main_menu_callback, 'calendar')
+    
     print("✅ Модуль 'calendar' загружен")
 
 
-def today_handler(bot, event):
-    """Команда /today — события на сегодня"""
+def get_calendar_keyboard():
+    return [
+        [
+            {"text": "📅 Сегодня", "callbackData": "today", "style": "primary"}
+        ],
+        [
+            {"text": "➡️ Завтра", "callbackData": "tomorrow", "style": "primary"}
+        ],
+        [
+            {"text": "📆 Неделя", "callbackData": "week", "style": "primary"}
+        ],
+        [
+            {"text": "🔄 Синхронизация", "callbackData": "sync", "style": "positive"}
+        ],
+        [
+            {"text": "◀️ В главное меню", "callbackData": "main_menu", "style": "secondary"}
+        ]
+    ]
+
+
+def send_or_edit(bot, chat_id, text, keyboard, msg_id=None):
+    """
+    Отправляет новое сообщение или редактирует существующее.
+    """
+    print(f"🔍 send_or_edit: chat_id={chat_id}, msg_id={msg_id}")
+    
+    if msg_id:
+        print(f"   ✏️ Пытаемся редактировать сообщение {msg_id}")
+        try:
+            bot.edit_text(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                text=text,
+                parse_mode="MarkdownV2",
+                inline_keyboard_markup=json.dumps(keyboard)
+            )
+            print(f"   ✅ Сообщение отредактировано")
+            return msg_id
+        except Exception as e:
+            print(f"   ❌ Ошибка редактирования: {e}")
+            print(f"   📤 Отправляем новое сообщение (fallback)")
+            result = bot.send_text(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="MarkdownV2",
+                inline_keyboard_markup=json.dumps(keyboard)
+            )
+            try:
+                data = result.json()
+                new_msg_id = data.get('msgId')
+                print(f"   ✅ Отправлено новое сообщение, msgId: {new_msg_id}")
+                return new_msg_id
+            except Exception as e:
+                print(f"   ⚠️ Не удалось распарсить ответ: {e}")
+                return None
+    else:
+        print(f"   📤 Отправляем новое сообщение")
+        result = bot.send_text(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="MarkdownV2",
+            inline_keyboard_markup=json.dumps(keyboard)
+        )
+        try:
+            data = result.json()
+            new_msg_id = data.get('msgId')
+            print(f"   ✅ Отправлено новое сообщение, msgId: {new_msg_id}")
+            return new_msg_id
+        except Exception as e:
+            print(f"   ⚠️ Не удалось распарсить ответ: {e}")
+            return None
+
+
+def show_calendar(bot, event, period, period_name):
+    chat_id = event.from_chat
+    print(f"🔍 show_calendar: period={period}, period_name={period_name}")
+    
     try:
         tz = pytz.timezone(Defaults.TIMEZONE)
         now = datetime.now(tz)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
+        
+        if period == 'today':
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+        elif period == 'tomorrow':
+            start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+        elif period == 'week':
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=7)
+        else:
+            return
         
         start_utc = start.astimezone(pytz.UTC).replace(tzinfo=None)
         end_utc = end.astimezone(pytz.UTC).replace(tzinfo=None)
@@ -78,172 +172,117 @@ def today_handler(bot, event):
         events = run_async(get_events_from_db(start_utc, end_utc))
         
         if not events:
-            bot.send_text(
-                chat_id=event.from_chat,
-                text=f"{Emoji.EMPTY} На сегодня мероприятий нет.",
-                parse_mode="HTML"
-            )
-            return
+            text = f"{Emoji.EMPTY} На {period_name} мероприятий нет."
+        elif period == 'week':
+            text = format_week_events(events, tz)
+        else:
+            text = format_events(events, period_name, tz)
         
-        message = format_events(events, "сегодня", tz)
-        bot.send_text(
-            chat_id=event.from_chat,
-            text=message,
-            parse_mode="HTML"
+        new_msg_id = send_or_edit(
+            bot,
+            chat_id,
+            text,
+            get_calendar_keyboard(),
+            _active_messages.get(chat_id)
         )
+        
+        if new_msg_id:
+            _active_messages[chat_id] = new_msg_id
+            print(f"   ✅ Сохранён новый msgId: {new_msg_id}")
         
     except Exception as e:
-        bot.send_text(
-            chat_id=event.from_chat,
-            text=f"{Emoji.ERROR} Ошибка: {e}",
-            parse_mode="HTML"
-        )
-
-
-def tomorrow_handler(bot, event):
-    """Команда /tomorrow — события на завтра"""
-    try:
-        tz = pytz.timezone(Defaults.TIMEZONE)
-        now = datetime.now(tz)
-        start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
-        
-        start_utc = start.astimezone(pytz.UTC).replace(tzinfo=None)
-        end_utc = end.astimezone(pytz.UTC).replace(tzinfo=None)
-        
-        events = run_async(get_events_from_db(start_utc, end_utc))
-        
-        if not events:
-            bot.send_text(
-                chat_id=event.from_chat,
-                text=f"{Emoji.EMPTY} На завтра мероприятий нет.",
-                parse_mode="HTML"
-            )
-            return
-        
-        message = format_events(events, "завтра", tz)
-        bot.send_text(
-            chat_id=event.from_chat,
-            text=message,
-            parse_mode="HTML"
-        )
-        
-    except Exception as e:
-        bot.send_text(
-            chat_id=event.from_chat,
-            text=f"{Emoji.ERROR} Ошибка: {e}",
-            parse_mode="HTML"
-        )
-
-
-def week_handler(bot, event):
-    """Команда /week — события на неделю с русскими днями и аудиториями"""
-    try:
-        tz = pytz.timezone(Defaults.TIMEZONE)
-        now = datetime.now(tz)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=7)
-        
-        start_utc = start.astimezone(pytz.UTC).replace(tzinfo=None)
-        end_utc = end.astimezone(pytz.UTC).replace(tzinfo=None)
-        
-        events = run_async(get_events_from_db(start_utc, end_utc))
-        
-        if not events:
-            bot.send_text(
-                chat_id=event.from_chat,
-                text=f"{Emoji.EMPTY} На ближайшую неделю мероприятий нет.",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Группируем по дням с русскими названиями
-        days = {}
-        for ev in events:
-            start_time = ev['start_time']
-            if start_time.tzinfo is None:
-                start_time = pytz.UTC.localize(start_time)
-            start_local = start_time.astimezone(tz)
-            
-            # Русское название дня
-            day_en = start_local.strftime('%A')
-            day_ru = WEEKDAYS_RU.get(day_en, day_en)
-            day_key = f"{start_local.strftime('%d.%m')} ({day_ru})"
-            
-            if day_key not in days:
-                days[day_key] = []
-            days[day_key].append(ev)
-        
-        lines = [f"{Emoji.WEEK} <b>События на неделю</b>", ""]
-        for day_name, day_events in sorted(days.items()):
-            lines.append(f"<b>{day_name}</b>")
-            for ev in day_events:
-                start_time = ev['start_time']
-                if start_time.tzinfo is None:
-                    start_time = pytz.UTC.localize(start_time)
-                start_local = start_time.astimezone(tz)
-                
-                title = ev.get('title', 'Без названия')
-                line = f"   {Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {title}"
-                lines.append(line)
-                
-                # Аудитория
-                auditory_name = ev.get('auditory_name')
-                if auditory_name:
-                    auditory_building = ev.get('auditory_building', '')
-                    if auditory_building:
-                        lines.append(f"      {Emoji.LOCATION} {auditory_name} ({auditory_building})")
-                    else:
-                        lines.append(f"      {Emoji.LOCATION} {auditory_name}")
-            lines.append("")
-        
-        bot.send_text(
-            chat_id=event.from_chat,
-            text="\n".join(lines),
-            parse_mode="HTML"
-        )
-        
-    except Exception as e:
+        print(f"   ❌ Ошибка в show_calendar: {e}")
         import traceback
         traceback.print_exc()
         bot.send_text(
-            chat_id=event.from_chat,
-            text=f"{Emoji.ERROR} Ошибка: {e}",
-            parse_mode="HTML"
+            chat_id=chat_id,
+            text=f"{Emoji.ERROR} Ошибка: {e}"
         )
 
 
+# ============ Обработчики команд ============
+
+def today_handler(bot, event):
+    show_calendar(bot, event, 'today', 'сегодня')
+
+
+def tomorrow_handler(bot, event):
+    show_calendar(bot, event, 'tomorrow', 'завтра')
+
+
+def week_handler(bot, event):
+    show_calendar(bot, event, 'week', 'неделю')
+
+
 def sync_handler(bot, event):
-    """Команда /sync — принудительная синхронизация"""
+    chat_id = event.from_chat
+    
     bot.send_text(
-        chat_id=event.from_chat,
-        text=f"{Emoji.SYNC} Запускаю синхронизацию с Google Calendar...",
-        parse_mode="HTML"
+        chat_id=chat_id,
+        text=f"{Emoji.SYNC} Запускаю синхронизацию..."
     )
     
     try:
         result = run_async(sync_calendar())
         
-        message = f"{Emoji.SUCCESS} <b>Синхронизация завершена!</b>\n\n"
+        message = f"{Emoji.SUCCESS} *Синхронизация завершена!*\n\n"
         message += f"📊 Получено событий: {result['total']}\n"
         message += f"💾 Сохранено в БД: {result['saved']}"
         
         bot.send_text(
-            chat_id=event.from_chat,
+            chat_id=chat_id,
             text=message,
-            parse_mode="HTML"
+            parse_mode="MarkdownV2"
         )
+        
+        show_calendar(bot, event, 'today', 'сегодня')
         
     except Exception as e:
         bot.send_text(
-            chat_id=event.from_chat,
-            text=f"{Emoji.ERROR} Ошибка синхронизации: {e}",
-            parse_mode="HTML"
+            chat_id=chat_id,
+            text=f"{Emoji.ERROR} Ошибка синхронизации: {e}"
         )
 
 
+# ============ Обработчики callback ============
+
+def today_callback(bot, event):
+    today_handler(bot, event)
+
+
+def tomorrow_callback(bot, event):
+    tomorrow_handler(bot, event)
+
+
+def week_callback(bot, event):
+    week_handler(bot, event)
+
+
+def sync_callback(bot, event):
+    """Обработчик нажатия на кнопку 'Синхронизация'."""
+    print(f"🔍 sync_callback вызван для чата {event.from_chat}")
+    sync_handler(bot, event)
+
+
+def main_menu_callback(bot, event):
+    """Обработчик нажатия на кнопку 'В главное меню'."""
+    from src.modules.menu.handlers import get_main_menu_text, get_main_menu_keyboard
+    
+    chat_id = event.from_chat
+    msg_id = _active_messages.get(chat_id)
+    
+    send_or_edit(
+        bot,
+        chat_id,
+        get_main_menu_text(),
+        get_main_menu_keyboard(),
+        msg_id
+    )
+
+
+# ============ Работа с БД ============
+
 async def get_events_from_db(start_utc, end_utc):
-    """Получение событий из БД за период (в UTC) с информацией об аудиториях"""
     pool = await Database.get_pool()
     
     async with pool.acquire() as conn:
@@ -268,26 +307,24 @@ async def get_events_from_db(start_utc, end_utc):
         return [dict(row) for row in rows]
 
 
+# ============ Форматирование ============
+
 def format_events(events, period_name, tz):
-    """Форматирует события с информацией об аудиториях и зданиях"""
     if not events:
         return f"{Emoji.EMPTY} На {period_name} мероприятий нет."
     
-    lines = [f"{Emoji.CALENDAR} <b>События на {period_name}</b>", ""]
+    lines = [f"{Emoji.CALENDAR} *События на {period_name}*", ""]
     
     for ev in events:
         title = ev.get('title', 'Без названия')
         
-        # Время
         start_time = ev['start_time']
         if start_time.tzinfo is None:
             start_time = pytz.UTC.localize(start_time)
         start_local = start_time.astimezone(tz)
         
-        # Строка с временем и названием события
-        lines.append(f"{Emoji.TIME} <b>{start_local.strftime('%H:%M')}</b> — {title}")
+        lines.append(f"{Emoji.TIME} *{start_local.strftime('%H:%M')}* — {title}")
         
-        # Строка с аудиторией (если есть)
         auditory_name = ev.get('auditory_name')
         if auditory_name:
             auditory_building = ev.get('auditory_building', '')
@@ -296,9 +333,53 @@ def format_events(events, period_name, tz):
             else:
                 lines.append(f"   {Emoji.LOCATION} {auditory_name}")
         
-        lines.append("")  # Пустая строка между событиями
+        lines.append("")
     
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"{Emoji.INFO} Итого: {len(events)} мероприятий")
+    
+    return "\n".join(lines)
+
+
+def format_week_events(events, tz):
+    if not events:
+        return f"{Emoji.EMPTY} На неделю мероприятий нет."
+    
+    days = {}
+    for ev in events:
+        start_time = ev['start_time']
+        if start_time.tzinfo is None:
+            start_time = pytz.UTC.localize(start_time)
+        start_local = start_time.astimezone(tz)
+        
+        day_en = start_local.strftime('%A')
+        day_ru = WEEKDAYS_RU.get(day_en, day_en)
+        day_key = f"{start_local.strftime('%d.%m')} ({day_ru})"
+        
+        if day_key not in days:
+            days[day_key] = []
+        days[day_key].append(ev)
+    
+    lines = [f"{Emoji.WEEK} *События на неделю*", ""]
+    for day_name, day_events in sorted(days.items()):
+        lines.append(f"*{day_name}*")
+        for ev in day_events:
+            start_time = ev['start_time']
+            if start_time.tzinfo is None:
+                start_time = pytz.UTC.localize(start_time)
+            start_local = start_time.astimezone(tz)
+            
+            title = ev.get('title', 'Без названия')
+            line = f"   {Emoji.TIME} *{start_local.strftime('%H:%M')}* — {title}"
+            lines.append(line)
+            
+            auditory_name = ev.get('auditory_name')
+            if auditory_name:
+                auditory_building = ev.get('auditory_building', '')
+                if auditory_building:
+                    lines.append(f"      {Emoji.LOCATION} {auditory_name} ({auditory_building})")
+                else:
+                    lines.append(f"      {Emoji.LOCATION} {auditory_name}")
+        lines.append("")
     
     return "\n".join(lines)
