@@ -75,7 +75,7 @@
 ## 🚀 Установка и запуск
 
 ### Требования
-- Python 3.6+
+- Python 2.7, 3.4, 3.5, 3.6
 - PostgreSQL 18+
 - VK Workspace аккаунт с правами на создание бота
 - Google Cloud проект с включённым Calendar API
@@ -275,8 +275,8 @@ def example_callback(bot, event):
 
 - **Автор:** Москвин Никита Романович — [@Nimos95](https://github.com/Nimos95)
 - **Организация:** СПбПУ Петра Великого, отдел технического сопровождения КВМ
-- moskvin_nr@spbstu.ru
-- +7 (993) 486-4670
+- 📧 moskvin_nr@spbstu.ru
+- 📞 +7 (993) 486-4670
 
 ---
 
