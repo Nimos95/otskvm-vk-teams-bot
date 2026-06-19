@@ -4,6 +4,7 @@ asyncpg
 pytz
 python-dateutil
 cyrtranslit
+psycopg2-binary==2.9.3
 
 # Google API (совместимый набор для Python 3.6)
 protobuf==3.19.6

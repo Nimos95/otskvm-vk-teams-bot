@@ -58,13 +58,13 @@ ASSIGNMENT_STATUSES_ACTIVE: Final[Tuple[str, ...]] = (
 # РОЛИ ПОЛЬЗОВАТЕЛЕЙ
 # ============================================================
 
-ROLE_SUPERADMIN: Final[str] = "superadmin"
-ROLE_ADMIN: Final[str] = "admin"
-ROLE_MANAGER: Final[str] = "manager"
-ROLE_ENGINEER: Final[str] = "engineer"
-ROLE_VIEWER: Final[str] = "viewer"
+ROLE_SUPERADMIN = "superadmin"
+ROLE_ADMIN = "admin"
+ROLE_MANAGER = "manager"
+ROLE_ENGINEER = "engineer"
+ROLE_VIEWER = "viewer"
 
-ALL_ROLES: Final[Tuple[str, ...]] = (
+ALL_ROLES = (
     ROLE_SUPERADMIN,
     ROLE_ADMIN,
     ROLE_MANAGER,
