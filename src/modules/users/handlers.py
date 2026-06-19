@@ -26,24 +26,32 @@ def get_user_role_sync(user_id):
 
 def register_user_sync(user_id, full_name=None):
     """Регистрация пользователя."""
-    row = DatabaseSync.fetchone(
-        "SELECT user_id FROM users WHERE user_id = %s",
-        (user_id,)
-    )
-    if not row:
-        DatabaseSync.execute(
-            """
-            INSERT INTO users (user_id, full_name, role)
-            VALUES (%s, %s, 'viewer')
-            """,
-            (user_id, full_name or user_id.split('@')[0])
-        )
-        print(f"👤 Зарегистрирован новый пользователь: {user_id}")
-    else:
-        DatabaseSync.execute(
-            "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = %s",
+    print(f"   🔍 register_user_sync: {user_id}")
+    try:
+        row = DatabaseSync.fetchone(
+            "SELECT user_id FROM users WHERE user_id = %s",
             (user_id,)
         )
+        print(f"   🔍 Результат проверки: {row}")
+        
+        if not row:
+            DatabaseSync.execute(
+                """
+                INSERT INTO users (user_id, full_name, role)
+                VALUES (%s, %s, 'viewer')
+                """,
+                (user_id, full_name or user_id.split('@')[0])
+            )
+            print(f"   👤 Зарегистрирован новый пользователь: {user_id}")
+        else:
+            DatabaseSync.execute(
+                "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = %s",
+                (user_id,)
+            )
+            print(f"   👤 Обновлён last_active для: {user_id}")
+    except Exception as e:
+        print(f"   ❌ Ошибка в register_user_sync: {e}")
+        raise
 
 
 def require_role(allowed_roles):

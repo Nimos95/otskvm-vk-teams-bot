@@ -187,6 +187,11 @@ class Emoji:
     STAR: Final[str] = "⭐"
     FIRE: Final[str] = "🔥"
 
+    # Админ-панель
+    STATS = "📊"
+    SETTINGS = "⚙️"
+    REPORTS = "📈"
+
 
 # ============================================================
 # ТИПЫ ЧАТОВ VK WORKSPACE

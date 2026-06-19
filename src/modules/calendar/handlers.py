@@ -8,13 +8,13 @@ from src.core.google_client import GoogleCalendarClient
 from src.core.database import Database
 from src.core.constants import Commands, Emoji, Defaults
 from .sync import sync_calendar
+from src.modules.menu.handlers import _active_messages, send_or_edit, get_main_menu_keyboard
+from src.core.db_sync import DatabaseSync
+
 
 # Глобальные переменные
 _calendar_client = None
 _loop = None
-
-# Словарь для хранения msgId активных сообщений календаря
-_active_messages = {}
 
 # Словарь для перевода дней недели на русский
 WEEKDAYS_RU = {
@@ -67,13 +67,14 @@ def setup(bot, module_manager):
     module_manager.register_callback('today', today_callback, 'calendar')
     module_manager.register_callback('tomorrow', tomorrow_callback, 'calendar')
     module_manager.register_callback('week', week_callback, 'calendar')
-    module_manager.register_callback('sync', sync_callback, 'calendar')  # <-- НОВОЕ
+    module_manager.register_callback('sync', sync_callback, 'calendar')
     module_manager.register_callback('main_menu', main_menu_callback, 'calendar')
     
     print("✅ Модуль 'calendar' загружен")
 
 
 def get_calendar_keyboard():
+    """Создаёт клавиатуру календаря."""
     return [
         [
             {"text": "📅 Сегодня", "callbackData": "today", "style": "primary"}
@@ -93,60 +94,8 @@ def get_calendar_keyboard():
     ]
 
 
-def send_or_edit(bot, chat_id, text, keyboard, msg_id=None):
-    """
-    Отправляет новое сообщение или редактирует существующее.
-    """
-    print(f"🔍 send_or_edit: chat_id={chat_id}, msg_id={msg_id}")
-    
-    if msg_id:
-        print(f"   ✏️ Пытаемся редактировать сообщение {msg_id}")
-        try:
-            bot.edit_text(
-                chat_id=chat_id,
-                msg_id=msg_id,
-                text=text,
-                parse_mode="MarkdownV2",
-                inline_keyboard_markup=json.dumps(keyboard)
-            )
-            print(f"   ✅ Сообщение отредактировано")
-            return msg_id
-        except Exception as e:
-            print(f"   ❌ Ошибка редактирования: {e}")
-            print(f"   📤 Отправляем новое сообщение (fallback)")
-            result = bot.send_text(
-                chat_id=chat_id,
-                text=text,
-                parse_mode="MarkdownV2",
-                inline_keyboard_markup=json.dumps(keyboard)
-            )
-            try:
-                data = result.json()
-                new_msg_id = data.get('msgId')
-                print(f"   ✅ Отправлено новое сообщение, msgId: {new_msg_id}")
-                return new_msg_id
-            except Exception as e:
-                print(f"   ⚠️ Не удалось распарсить ответ: {e}")
-                return None
-    else:
-        print(f"   📤 Отправляем новое сообщение")
-        result = bot.send_text(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="MarkdownV2",
-            inline_keyboard_markup=json.dumps(keyboard)
-        )
-        try:
-            data = result.json()
-            new_msg_id = data.get('msgId')
-            print(f"   ✅ Отправлено новое сообщение, msgId: {new_msg_id}")
-            return new_msg_id
-        except Exception as e:
-            print(f"   ⚠️ Не удалось распарсить ответ: {e}")
-            return None
-
-
 def show_calendar(bot, event, period, period_name):
+    """Показывает календарь с редактированием существующего сообщения."""
     chat_id = event.from_chat
     print(f"🔍 show_calendar: period={period}, period_name={period_name}")
     
@@ -178,12 +127,15 @@ def show_calendar(bot, event, period, period_name):
         else:
             text = format_events(events, period_name, tz)
         
+        keyboard = get_calendar_keyboard()
+        msg_id = _active_messages.get(chat_id)
+        
         new_msg_id = send_or_edit(
             bot,
             chat_id,
             text,
-            get_calendar_keyboard(),
-            _active_messages.get(chat_id)
+            keyboard,
+            msg_id
         )
         
         if new_msg_id:
@@ -215,10 +167,28 @@ def week_handler(bot, event):
 
 
 def sync_handler(bot, event):
-    chat_id = event.from_chat
+    """Команда /sync — принудительная синхронизация (резервный вариант)."""
+    user_id = event.from_chat
+    
+    # Проверка прав
+    row = DatabaseSync.fetchone(
+        "SELECT role FROM users WHERE user_id = %s",
+        (user_id,)
+    )
+    role = row[0] if row else 'viewer'
+    
+    if role not in ['admin', 'superadmin']:
+        bot.send_text(
+            chat_id=user_id,
+            text=f"{Emoji.ERROR} ⛔ Доступ запрещён.\n\n"
+                 f"Синхронизация доступна только для администраторов.\n"
+                 f"Ваша роль: <b>{role}</b>",
+            parse_mode="HTML"
+        )
+        return
     
     bot.send_text(
-        chat_id=chat_id,
+        chat_id=user_id,
         text=f"{Emoji.SYNC} Запускаю синхронизацию..."
     )
     
@@ -230,7 +200,7 @@ def sync_handler(bot, event):
         message += f"💾 Сохранено в БД: {result['saved']}"
         
         bot.send_text(
-            chat_id=chat_id,
+            chat_id=user_id,
             text=message,
             parse_mode="MarkdownV2"
         )
@@ -239,7 +209,7 @@ def sync_handler(bot, event):
         
     except Exception as e:
         bot.send_text(
-            chat_id=chat_id,
+            chat_id=user_id,
             text=f"{Emoji.ERROR} Ошибка синхронизации: {e}"
         )
 
@@ -259,25 +229,76 @@ def week_callback(bot, event):
 
 
 def sync_callback(bot, event):
-    """Обработчик нажатия на кнопку 'Синхронизация'."""
-    print(f"🔍 sync_callback вызван для чата {event.from_chat}")
-    sync_handler(bot, event)
+    """
+    Обработчик нажатия на кнопку 'Синхронизация'.
+    Показывает модальное окно с результатом (без промежуточного уведомления).
+    """
+    user_id = event.from_chat
+    
+    # Проверка прав
+    row = DatabaseSync.fetchone(
+        "SELECT role FROM users WHERE user_id = %s",
+        (user_id,)
+    )
+    role = row[0] if row else 'viewer'
+    
+    if role not in ['admin', 'superadmin']:
+        bot.answer_callback_query(
+            query_id=event.data['queryId'],
+            text="⛔ Доступ запрещён. Только для администраторов.",
+            show_alert=True
+        )
+        return
+    
+    # Запускаем синхронизацию
+    try:
+        result = run_async(sync_calendar())
+        
+        # Обновляем календарь
+        show_calendar(bot, event, 'today', 'сегодня')
+        
+        # Модальное окно с результатом
+        message = f"✅ Синхронизация завершена!\n\n"
+        message += f"📊 Получено: {result['total']} событий\n"
+        message += f"💾 Сохранено: {result['saved']} событий"
+        
+        bot.answer_callback_query(
+            query_id=event.data['queryId'],
+            text=message,
+            show_alert=True  # <-- Модальное окно
+        )
+        
+    except Exception as e:
+        bot.answer_callback_query(
+            query_id=event.data['queryId'],
+            text=f"❌ Ошибка: {str(e)[:100]}",
+            show_alert=True
+        )
+        print(f"   ❌ Ошибка синхронизации: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def main_menu_callback(bot, event):
-    """Обработчик нажатия на кнопку 'В главное меню'."""
-    from src.modules.menu.handlers import get_main_menu_text, get_main_menu_keyboard
+    """Обработчик кнопки 'В главное меню'."""
+    from src.modules.menu.handlers import get_main_menu_text, get_main_menu_keyboard, send_or_edit, _active_messages
     
-    chat_id = event.from_chat
-    msg_id = _active_messages.get(chat_id)
+    user_id = event.from_chat
+    msg_id = _active_messages.get(user_id)
     
-    send_or_edit(
+    text = get_main_menu_text(user_id)
+    keyboard = get_main_menu_keyboard(user_id)
+    
+    new_msg_id = send_or_edit(
         bot,
-        chat_id,
-        get_main_menu_text(),
-        get_main_menu_keyboard(),
+        user_id,
+        text,
+        keyboard,
         msg_id
     )
+    
+    if new_msg_id:
+        _active_messages[user_id] = new_msg_id
 
 
 # ============ Работа с БД ============
