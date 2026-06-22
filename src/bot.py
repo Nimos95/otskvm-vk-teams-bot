@@ -2,6 +2,7 @@
 
 import os
 import sys
+import asyncio
 from dotenv import load_dotenv
 from bot.bot import Bot
 from bot.handler import MessageHandler, BotButtonCommandHandler
@@ -9,6 +10,7 @@ from src.core.module_manager import ModuleManager
 from src.core.chat_filter import is_private_chat, get_chat_type_name
 from src.core.database import Database
 from src.core.bot_wrapper import SafeBot
+from src.core.db_sync import DatabaseSync
 
 load_dotenv()
 
@@ -22,18 +24,25 @@ if not TOKEN:
 def create_bot():
     """Создаёт и настраивает бота"""
     
-    # Инициализация базы данных
-    import asyncio
+    # Инициализация базы данных (асинхронный пул)
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(Database.get_pool())
         loop.close()
-        print("✅ База данных подключена")
+        print("✅ База данных подключена (асинхронный пул)")
     except Exception as e:
-        print(f"⚠️ База данных НЕ подключена: {e}")
+        print(f"⚠️ База данных НЕ подключена (асинхронный пул): {e}")
     
-    bot = SafeBot(token=TOKEN)  # <-- ИСПОЛЬЗУЕМ SafeBot
+    # Инициализация синхронного пула БД
+    try:
+        DatabaseSync.get_pool()
+        print("✅ Синхронный пул БД создан")
+    except Exception as e:
+        print(f"⚠️ Синхронный пул БД НЕ создан: {e}")
+    
+    # Создаём бота
+    bot = SafeBot(token=TOKEN)
     module_manager = ModuleManager(bot)
     
     # Загружаем модули
@@ -46,8 +55,13 @@ def create_bot():
         callback_data = event.data.get('callbackData')
         
         print(f"🔍 Глобальный callback: {callback_data}")
-        print(f"🔍 Доступные callback'и: {list(module_manager.callbacks.keys())}")
         
+        # 1️⃣ Сначала проверяем callback аудиторий
+        from src.modules.auditory.handlers import handle_auditory_callback
+        if handle_auditory_callback(bot, event):
+            return  # <-- Если это callback аудитории — выходим
+        
+        # 2️⃣ Затем ищем в зарегистрированных callback'ах (остальные модули)
         handler_info = module_manager.get_callback_handler(callback_data)
         if handler_info:
             module_name, handler = handler_info
@@ -56,6 +70,7 @@ def create_bot():
         else:
             print(f"⚠️ Нет обработчика для callback: {callback_data}")
         
+        # 3️⃣ Отвечаем на callback
         bot.answer_callback_query(
             query_id=event.data['queryId'],
             text="✅",
@@ -64,7 +79,9 @@ def create_bot():
     
     bot.dispatcher.add_handler(BotButtonCommandHandler(callback=global_button_handler))
     
+    # ============================================================
     # Главный обработчик сообщений
+    # ============================================================
     def main_handler(bot, event):
         chat_id = event.from_chat
         message_text = event.text.strip() if event.text else ""
@@ -81,6 +98,12 @@ def create_bot():
             print(f"⏭️ Игнорирую (общий чат)")
             return
         
+        # 1️⃣ Сначала проверяем, не является ли это комментарием к статусу
+        from src.modules.auditory.handlers import handle_comment_message
+        if handle_comment_message(bot, event):
+            return  # <-- Если это был комментарий — выходим
+        
+        # 2️⃣ Затем проверяем команды
         if message_text.startswith('/'):
             command = message_text.split()[0].lower()
             handler_info = module_manager.get_command_handler(command)
@@ -95,6 +118,7 @@ def create_bot():
                     text=f"❓ Неизвестная команда `{command}`\n\nНапишите /help"
                 )
         else:
+            # Обычное сообщение (не команда) — эхо
             bot.send_text(
                 chat_id=chat_id,
                 text=f"🔄 Эхо: {message_text}\n\n(Напишите /help для списка команд)"
@@ -107,7 +131,7 @@ def create_bot():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 БОТ VK WORKSPACE - ДЕНЬ 4")
+    print("🤖 БОТ VK WORKSPACE")
     print("=" * 60)
     
     bot, module_manager = create_bot()
