@@ -16,6 +16,7 @@ def setup(bot, module_manager):
     
     module_manager.register_command('/status', status_handler, 'auditory')
     module_manager.register_command('/set_status', set_status_handler, 'auditory')
+    module_manager.register_command('/history', history_handler, 'auditory')
     
     print("✅ Модуль 'auditory' загружен")
 
@@ -92,34 +93,41 @@ def handle_auditory_callback(bot, event):
     
     action = parts[1]
     
+    # Обработка истории: auditory_history_{id}
+    if action == 'history' and len(parts) >= 3:
+        auditory_id = parts[2]
+        show_auditory_history(bot, user_id, auditory_id)
+        bot.answer_callback_query(
+            query_id=event.data['queryId'],
+            text="📋 Загружаю историю...",
+            show_alert=False
+        )
+        return True
+    
+    # Обработка пропуска комментария
     if action == 'skip' and len(parts) >= 3 and parts[2] == 'comment':
         auditory_skip_comment_callback(bot, event)
         return True
     
+    # Обработка отмены комментария
     if action == 'cancel' and len(parts) >= 3 and parts[2] == 'comment':
         auditory_cancel_comment_callback(bot, event)
         return True
     
+    # Обработка выбора аудитории: auditory_select_{id}
     if action == 'select' and len(parts) >= 3:
         auditory_id = parts[2]
         auditory_select_callback(bot, event, auditory_id)
         return True
     
+    # Обработка изменения статуса: auditory_status_{id}_{status}
     if action == 'status' and len(parts) >= 4:
         auditory_id = parts[2]
         status = parts[3]
         auditory_status_callback(bot, event, auditory_id, status)
         return True
     
-    if action == 'history' and len(parts) >= 3:
-        auditory_id = parts[2]
-        bot.answer_callback_query(
-            query_id=event.data['queryId'],
-            text="📋 История статусов в разработке",
-            show_alert=True
-        )
-        return True
-    
+    # Обработка возврата к списку
     if action == 'back':
         set_status_handler(bot, event)
         bot.answer_callback_query(
@@ -129,6 +137,7 @@ def handle_auditory_callback(bot, event):
         )
         return True
     
+    # Обработка отмены (главная)
     if action == 'cancel' and len(parts) == 2:
         auditory_cancel_callback(bot, event)
         return True
@@ -673,3 +682,193 @@ def handle_comment_message(bot, event):
         )
     
     return True
+
+def history_handler(bot, event):
+    """
+    Команда /history — просмотр истории статусов аудитории.
+    Использование: /history {auditory_id} или /history (с выбором через кнопки)
+    """
+    user_id = event.from_chat
+    print(f"🔍 history_handler вызван для чата {user_id}")
+    
+    # Разбираем аргументы
+    args = event.text.strip().split()
+    
+    if len(args) >= 2:
+        # Если указан ID аудитории — показываем историю сразу
+        auditory_id = args[1]
+        show_auditory_history(bot, user_id, auditory_id)
+        return
+    
+    # Если ID не указан — показываем список аудиторий для выбора
+    try:
+        rows = DatabaseSync.fetchall(
+            """
+            SELECT id, name, building
+            FROM auditories
+            WHERE is_active = TRUE
+            ORDER BY name
+            """
+        )
+        
+        if not rows:
+            bot.send_text(
+                chat_id=user_id,
+                text=f"{Emoji.EMPTY} Аудиторий пока нет.",
+                parse_mode="MarkdownV2"
+            )
+            return
+        
+        # Создаём клавиатуру с аудиториями
+        buttons = []
+        for row in rows:
+            auditory_id, name, building = row
+            label = name
+            if building:
+                label += f" ({building})"
+            buttons.append([
+                {"text": label, "callbackData": f"auditory_history_{auditory_id}", "style": "primary"}
+            ])
+        
+        buttons.append([
+            {"text": "◀️ Отмена", "callbackData": "auditory_cancel", "style": "secondary"}
+        ])
+        
+        msg_id = _active_messages.get(user_id)
+        send_or_edit(
+            bot,
+            user_id,
+            f"{Emoji.LOCATION} **Выберите аудиторию для просмотра истории:**",
+            buttons,
+            msg_id
+        )
+        
+    except Exception as e:
+        print(f"   ❌ Ошибка в history_handler: {e}")
+        traceback.print_exc()
+        bot.send_text(
+            chat_id=user_id,
+            text=f"{Emoji.ERROR} Ошибка: {e}"
+        )
+
+
+def show_auditory_history(bot, user_id, auditory_id):
+    """Показывает историю статусов для конкретной аудитории."""
+    try:
+        # Проверяем, существует ли аудитория
+        auditory = DatabaseSync.fetchone(
+            """
+            SELECT id, name, building
+            FROM auditories
+            WHERE id = %s AND is_active = TRUE
+            """,
+            (auditory_id,)
+        )
+        
+        if not auditory:
+            bot.send_text(
+                chat_id=user_id,
+                text=f"{Emoji.ERROR} Аудитория с ID `{auditory_id}` не найдена.",
+                parse_mode="MarkdownV2"
+            )
+            return
+        
+        auditory_id, name, building = auditory
+        
+        # Получаем историю статусов
+        rows = DatabaseSync.fetchall(
+            """
+            SELECT 
+                sl.status,
+                sl.comment,
+                sl.created_at,
+                sl.resolved_at,
+                sl.resolution_comment,
+                u.full_name AS reported_by
+            FROM status_log sl
+            LEFT JOIN users u ON sl.reported_by = u.user_id
+            WHERE sl.auditory_id = %s
+            ORDER BY sl.created_at DESC
+            LIMIT 20
+            """,
+            (auditory_id,)
+        )
+        
+        if not rows:
+            bot.send_text(
+                chat_id=user_id,
+                text=f"{Emoji.INFO} Для аудитории **{name}** нет истории статусов.",
+                parse_mode="MarkdownV2"
+            )
+            return
+        
+        # Формируем сообщение с историей
+        lines = [f"{Emoji.LOCATION} **История статусов: {name}**", ""]
+        
+        if building:
+            lines[0] += f" ({building})"
+        
+        for row in rows:
+            status, comment, created_at, resolved_at, resolution_comment, reported_by = row
+            
+            status_emoji = {
+                'green': '🟢',
+                'yellow': '🟡',
+                'red': '🔴'
+            }.get(status, '⚪')
+            
+            status_text = {
+                'green': 'Всё работает',
+                'yellow': 'Есть проблемы',
+                'red': 'Не работает'
+            }.get(status, 'Статус неизвестен')
+            
+            time_str = created_at.strftime('%H:%M %d.%m')
+            
+            # Основная строка
+            line = f"{status_emoji} **{status_text}** — {time_str}"
+            lines.append(line)
+            
+            # Комментарий
+            if comment:
+                lines.append(f"   📝 {comment}")
+            
+            # Кто отметил
+            if reported_by:
+                lines.append(f"   👤 {reported_by}")
+            
+            # Если статус был исправлен
+            if resolved_at and resolution_comment:
+                lines.append(f"   ✅ Исправлено: {resolution_comment}")
+            elif resolved_at:
+                lines.append(f"   ✅ Исправлено")
+            
+            lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"{Emoji.INFO} Последние {len(rows)} изменений")
+        
+        # Показываем кнопку "Назад к списку"
+        buttons = [
+            [
+                {"text": "◀️ Назад к списку", "callbackData": "auditory_back", "style": "secondary"}
+            ]
+        ]
+        
+        msg_id = _active_messages.get(user_id)
+        send_or_edit(
+            bot,
+            user_id,
+            "\n".join(lines),
+            buttons,
+            msg_id
+        )
+        
+    except Exception as e:
+        print(f"   ❌ Ошибка в show_auditory_history: {e}")
+        traceback.print_exc()
+        bot.send_text(
+            chat_id=user_id,
+            text=f"{Emoji.ERROR} Ошибка при загрузке истории: {e}"
+        )
+
