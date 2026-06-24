@@ -4,6 +4,7 @@ import json
 from src.core.constants import Commands, Emoji, ROLE_ADMIN, ROLE_SUPERADMIN
 from src.core.db_sync import DatabaseSync
 from src.modules.menu.handlers import _active_messages, send_or_edit, get_main_menu_keyboard
+import traceback
 
 
 def setup(bot, module_manager):
@@ -13,7 +14,7 @@ def setup(bot, module_manager):
     module_manager.register_command('/admin', admin_panel_handler, 'admin')
     
     module_manager.register_callback('admin_stats', admin_stats_handler, 'admin')
-    module_manager.register_callback('admin_users', admin_users_callback, 'admin')
+    module_manager.register_callback('admin_status_stats', admin_status_stats_handler, 'admin') 
     module_manager.register_callback('admin_user_management', admin_user_management_handler, 'admin')
     module_manager.register_callback('back_to_main', admin_back_to_main_handler, 'admin')
     
@@ -38,6 +39,9 @@ def get_admin_keyboard(user_id):
     if role in [ROLE_ADMIN, ROLE_SUPERADMIN]:
         buttons.append([
             {"text": "📊 Статистика", "callbackData": "admin_stats", "style": "primary"}
+        ])
+        buttons.append([
+            {"text": "📊 Статусы аудиторий", "callbackData": "admin_status_stats", "style": "primary"}  # <-- НОВАЯ КНОПКА
         ])
         buttons.append([
             {"text": "👤 Список пользователей", "callbackData": "admin_users", "style": "primary"}
@@ -234,3 +238,104 @@ def admin_back_to_main_handler(bot, event):
     """Обработчик кнопки 'В главное меню'."""
     from src.modules.menu.handlers import start_handler
     start_handler(bot, event)
+
+def admin_status_stats_handler(bot, event):
+    """Обработчик кнопки '📊 Статусы аудиторий'."""
+    user_id = event.from_chat
+    msg_id = _active_messages.get(user_id)
+    
+    try:
+        # Получаем статистику по статусам
+        rows = DatabaseSync.fetchall(
+            """
+            SELECT 
+                COUNT(*) FILTER (WHERE sl.status = 'green') as green_count,
+                COUNT(*) FILTER (WHERE sl.status = 'yellow') as yellow_count,
+                COUNT(*) FILTER (WHERE sl.status = 'red') as red_count,
+                COUNT(*) FILTER (WHERE sl.status IS NULL) as no_status,
+                COUNT(*) as total
+            FROM auditories a
+            LEFT JOIN (
+                SELECT DISTINCT ON (auditory_id) 
+                    auditory_id, status
+                FROM status_log
+                ORDER BY auditory_id, created_at DESC
+            ) sl ON a.id = sl.auditory_id
+            WHERE a.is_active = TRUE
+            """
+        )
+        
+        if rows:
+            row = rows[0]
+            green, yellow, red, no_status, total = row
+        else:
+            green = yellow = red = no_status = 0
+            total = 0
+        
+        # Получаем список аудиторий с проблемами
+        problem_rows = DatabaseSync.fetchall(
+            """
+            SELECT 
+                a.name,
+                a.building,
+                sl.status,
+                sl.comment,
+                sl.created_at
+            FROM auditories a
+            JOIN (
+                SELECT DISTINCT ON (auditory_id) 
+                    auditory_id, status, comment, created_at
+                FROM status_log
+                ORDER BY auditory_id, created_at DESC
+            ) sl ON a.id = sl.auditory_id
+            WHERE sl.status IN ('yellow', 'red')
+            ORDER BY sl.created_at DESC
+            LIMIT 10
+            """
+        )
+        
+        # Формируем сообщение
+        lines = [f"{Emoji.STATS} **Статистика по статусам аудиторий**", ""]
+        lines.append(f"🟢 Всё работает: **{green}**")
+        lines.append(f"🟡 Есть проблемы: **{yellow}**")
+        lines.append(f"🔴 Не работает: **{red}**")
+        lines.append(f"⚪ Статус не установлен: **{no_status}**")
+        lines.append("")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📊 Всего аудиторий: **{total}**")
+        
+        if problem_rows:
+            lines.append("")
+            lines.append("**🔴 Проблемные аудитории:**")
+            for row in problem_rows:
+                name, building, status, comment, created_at = row
+                status_emoji = '🟡' if status == 'yellow' else '🔴'
+                date_str = created_at.strftime('%d.%m.%Y')
+                line = f"   {status_emoji} **{name}**"
+                if building:
+                    line += f" ({building})"
+                if comment:
+                    line += f" — {comment[:50]}"
+                line += f" {date_str}"
+                lines.append(line)
+        
+        keyboard = get_admin_keyboard(user_id)
+        
+        new_msg_id = send_or_edit(
+            bot,
+            user_id,
+            "\n".join(lines),
+            keyboard,
+            msg_id
+        )
+        
+        if new_msg_id:
+            _active_messages[user_id] = new_msg_id
+        
+    except Exception as e:
+        print(f"   ❌ Ошибка в admin_status_stats_handler: {e}")
+        traceback.print_exc()
+        bot.send_text(
+            chat_id=user_id,
+            text=f"{Emoji.ERROR} Ошибка: {e}"
+        )
