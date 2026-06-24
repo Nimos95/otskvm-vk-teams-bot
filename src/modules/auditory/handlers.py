@@ -17,6 +17,7 @@ def setup(bot, module_manager):
     module_manager.register_command('/status', status_handler, 'auditory')
     module_manager.register_command('/set_status', set_status_handler, 'auditory')
     module_manager.register_command('/history', history_handler, 'auditory')
+    module_manager.register_command('/test_notification', test_notification_handler, 'auditory')
     
     print("✅ Модуль 'auditory' загружен")
 
@@ -463,6 +464,7 @@ def auditory_skip_comment_callback(bot, event):
     auditory_id = pending['auditory_id']
     auditory_name = pending['auditory_name']
     status = pending['status']
+    auditory_building = pending.get('auditory_building', '')
     
     del _pending_comments[user_id]
     
@@ -517,7 +519,22 @@ def auditory_skip_comment_callback(bot, event):
             msg_id
         )
         
-        # 2. Возвращаемся к списку аудиторий
+        # 2. Отправляем уведомление, если статус жёлтый или красный
+        if status in ['yellow', 'red']:
+            send_status_notification(
+                bot, 
+                auditory_name, 
+                auditory_building, 
+                status, 
+                status_emoji, 
+                status_text, 
+                '(без комментария)', 
+                user_id
+            )
+            import time
+            time.sleep(2)  # Увеличиваем задержку до 2 секунд
+        
+        # 3. Возвращаемся к списку аудиторий
         set_status_handler(bot, event)
         
     except Exception as e:
@@ -545,7 +562,7 @@ def auditory_status_callback(bot, event, auditory_id, status):
         return
     
     auditory = DatabaseSync.fetchone(
-        "SELECT id, name FROM auditories WHERE id = %s AND is_active = TRUE",
+        "SELECT id, name, building FROM auditories WHERE id = %s AND is_active = TRUE",
         (auditory_id,)
     )
     
@@ -557,6 +574,8 @@ def auditory_status_callback(bot, event, auditory_id, status):
         )
         return
     
+    auditory_id, auditory_name, auditory_building = auditory
+    
     status_names = {
         'green': '🟢 Всё работает',
         'yellow': '🟡 Есть проблемы',
@@ -565,10 +584,11 @@ def auditory_status_callback(bot, event, auditory_id, status):
     
     _pending_comments[user_id] = {
         'auditory_id': int(auditory_id),
-        'auditory_name': auditory[1],
+        'auditory_name': auditory_name,
+        'auditory_building': auditory_building or '',
         'status': status
     }
-    print(f"   📝 Сохранено состояние для {user_id}: {_pending_comments[user_id]}")
+    # print(f"   📝 Сохранено состояние для {user_id}: {_pending_comments[user_id]}") # для логирования
     
     bot.answer_callback_query(
         query_id=event.data['queryId'],
@@ -581,14 +601,13 @@ def auditory_status_callback(bot, event, auditory_id, status):
         bot,
         user_id,
         f"{Emoji.INFO} **Введите комментарий**\n\n"
-        f"🏛️ Аудитория: **{auditory[1]}**\n"
+        f"🏛️ Аудитория: **{auditory_name}**\n"
         f"🔄 Статус: {status_names.get(status, status)}\n\n"
         f"📝 Напишите комментарий в следующем сообщении.\n"
         f"💡 Нажмите «⏭️ Сохранить без комментария», чтобы пропустить.",
         get_comment_keyboard(),
         msg_id
     )
-
 
 def handle_comment_message(bot, event):
     """
@@ -606,6 +625,7 @@ def handle_comment_message(bot, event):
     auditory_id = pending['auditory_id']
     auditory_name = pending['auditory_name']
     status = pending['status']
+    auditory_building = pending.get('auditory_building', '')
     
     del _pending_comments[user_id]
     
@@ -651,7 +671,22 @@ def handle_comment_message(bot, event):
         )
         print(f"   ✅ Отправлено подтверждение (без форматирования)")
         
-        # 2. Отправляем НОВОЕ сообщение с главным меню
+        # 2. Отправляем уведомление, если статус жёлтый или красный
+        if status in ['yellow', 'red']:
+            send_status_notification(
+                bot, 
+                auditory_name, 
+                auditory_building, 
+                status, 
+                status_emoji, 
+                status_text, 
+                text, 
+                user_id
+            )
+            import time
+            time.sleep(2)  # Увеличиваем задержку до 2 секунд
+        
+        # 3. Отправляем НОВОЕ сообщение с главным меню
         menu_text = get_main_menu_text(user_id)
         menu_keyboard = get_main_menu_keyboard(user_id)
         
@@ -872,3 +907,76 @@ def show_auditory_history(bot, user_id, auditory_id):
             text=f"{Emoji.ERROR} Ошибка при загрузке истории: {e}"
         )
 
+def send_status_notification(bot, auditory_name, auditory_building, status, status_emoji, status_text, comment, user_id):
+    """
+    Отправляет уведомление об изменении статуса в общий чат.
+    """
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    chat_id = os.getenv('NOTIFICATION_CHAT_ID')
+    
+    # print(f"   📨 Отправка уведомления в чат: {chat_id}") # отладка
+    # print(f"   🔍 NOTIFICATION_CHAT_ID из .env: {chat_id}") # отладка
+    
+    if not chat_id:
+        print(f"   ⚠️ NOTIFICATION_CHAT_ID не задан в .env, уведомление не отправлено")
+        return
+    
+    message = f"⚠️ **Изменение статуса аудитории**\n\n"
+    message += f"🏛️ Аудитория: **{auditory_name}**"
+    if auditory_building:
+        message += f" ({auditory_building})"
+    message += f"\n🔄 Статус: {status_emoji} **{status_text}**"
+    if comment:
+        message += f"\n📝 Комментарий: {comment}"
+    message += f"\n👤 Отметил: {user_id}"
+    message += f"\n🕐 {datetime.now().strftime('%H:%M')}"
+    
+    try:
+        result = bot.send_text(
+            chat_id=chat_id,
+            text=message,
+            # parse_mode="MarkdownV2"
+        )
+        print(f"   ✅ Уведомление отправлено в чат {chat_id}, результат: {result}")
+    except Exception as e:
+        print(f"   ❌ Ошибка отправки уведомления: {e}")
+        import traceback
+        traceback.print_exc()
+
+def test_notification_handler(bot, event):
+    """Временная команда для теста уведомлений."""
+    user_id = event.from_chat
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    chat_id = os.getenv('NOTIFICATION_CHAT_ID')
+    
+    print(f"   📨 Тестовая отправка в чат: {chat_id}")
+    
+    if not chat_id:
+        bot.send_text(
+            chat_id=user_id,
+            text="❌ NOTIFICATION_CHAT_ID не задан в .env"
+        )
+        return
+    
+    try:
+        result = bot.send_text(
+            chat_id=chat_id,
+            text="🔔 Тестовое уведомление из бота"
+        )
+        bot.send_text(
+            chat_id=user_id,
+            text=f"✅ Уведомление отправлено в чат {chat_id}, результат: {result}"
+        )
+        print(f"   ✅ Тестовое уведомление отправлено в чат {chat_id}")
+    except Exception as e:
+        print(f"   ❌ Ошибка: {e}")
+        bot.send_text(
+            chat_id=user_id,
+            text=f"❌ Ошибка: {e}"
+        )
